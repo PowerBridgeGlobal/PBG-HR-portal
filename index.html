@@ -106,7 +106,11 @@ function parseRes(res){
   });
 }
 function api(action, extra){
-  const payload = Object.assign({action}, session ? {empId:session.empId, pin:session.pin} : {}, extra||{});
+  // IMPORTANT: auth credentials (session.empId/pin) are applied LAST so that
+  // a payload field like empId (which often names the *target* employee, e.g.
+  // in setRole) can never overwrite the logged-in user's own credentials.
+  // The target employee is passed as targetEmpId instead; see backend.
+  const payload = Object.assign({action}, extra||{}, session ? {empId:session.empId, pin:session.pin} : {});
   return fetch(APPS_SCRIPT_URL, {method:"POST", headers:{"Content-Type":"text/plain;charset=utf-8"}, body:JSON.stringify(payload)}).then(parseRes);
 }
 
@@ -541,12 +545,12 @@ function openManage(eJson){
   });
 }
 function saveRole(empId){
-  const b={empId,"Role":$("mRole").value,"Department":$("mDept").value,"Access Level":$("mAccess").value,"Status":$("mStatus").value,"Reporting Manager":$("mMgr").value};
+  const b={targetEmpId:empId,"Role":$("mRole").value,"Department":$("mDept").value,"Access Level":$("mAccess").value,"Status":$("mStatus").value,"Reporting Manager":$("mMgr").value};
   $("mMsg").innerHTML=`<div class="msg"><span class="spinner"></span> Saving…</div>`;
   api("setRole",b).then(res=>{ $("mMsg").innerHTML=res.error?`<div class="msg bad">${esc(res.error)}</div>`:`<div class="msg ok">✓ Saved.</div>`; });
 }
 function genPin(empId){
-  api("generatePin",{empId}).then(res=>{
+  api("generatePin",{targetEmpId:empId}).then(res=>{
     if(res.error){ $("pinResult").innerHTML=`<div class="msg bad">${esc(res.error)}</div>`; return; }
     $("pinResult").innerHTML=`<div class="msg ok">New PIN for ${esc(empId)}: <b style="font-size:16px;">${esc(res.pin)}</b> — share securely. They'll be asked to change it at next login.</div>`;
   });
@@ -564,7 +568,7 @@ function loadSalaryTab(){
 }
 function openSalary(eJson){
   const e=JSON.parse(eJson);
-  Promise.all([api("getCompensation",{empId:e.empId}), api("formOptions")]).then(([c,opts])=>{
+  Promise.all([api("getCompensation",{targetEmpId:e.empId}), api("formOptions")]).then(([c,opts])=>{
     const comp=c.compensation||{};
     const mgrList=((opts&&opts.managers)||[]).filter(m=>m.empId!==e.empId);
     const preset = e.reportingManager || "Sashank (Founder/CEO)";
@@ -592,14 +596,14 @@ function openSalary(eJson){
   });
 }
 function saveComp(empId){
-  const b={empId,basic:$("sBasic").value,effectiveDate:$("sDate").value,notes:$("sNotes").value};
+  const b={targetEmpId:empId,basic:$("sBasic").value,effectiveDate:$("sDate").value,notes:$("sNotes").value};
   if(!(Number(b.basic)>0)){ $("sMsg").innerHTML=`<div class="msg bad">Enter a valid basic salary.</div>`; return; }
   $("sMsg").innerHTML=`<div class="msg"><span class="spinner"></span> Saving…</div>`;
   api("setCompensation",b).then(res=>{ $("sMsg").innerHTML=res.error?`<div class="msg bad">${esc(res.error)}</div>`:`<div class="msg ok">✓ Saved.</div>`; });
 }
 function genLetter(empId){
   const mgr=$("sMgr").value, jd=$("sDate").value;
-  api("generateLetter",{empId,reportingManager:mgr,joiningDate:jd}).then(res=>{
+  api("generateLetter",{targetEmpId:empId,reportingManager:mgr,joiningDate:jd}).then(res=>{
     if(res.error){ $("sMsg").innerHTML=`<div class="msg bad">${esc(res.error)}</div>`; return; }
     renderLetter(res.letter);
   });
