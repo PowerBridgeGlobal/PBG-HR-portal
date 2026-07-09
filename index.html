@@ -506,30 +506,42 @@ function loadCeoTab(){
 
 function openManage(eJson){
   const e=JSON.parse(typeof eJson==="string"?eJson:eJson);
-  $("ceoBody").innerHTML=`<div class="card"><h3>Manage — ${esc(e.name)}</h3>
-    <div class="csub">${esc(e.empId)}</div>
-    <div class="grid2">
-      <div><label class="fl">Role</label><input id="mRole" value="${esc(e.role)}" /></div>
-      <div><label class="fl">Department</label>
-        <select id="mDept">${["","Sales","Accounts","Warehouse","Procurement","Marketing","Management"].map(d=>`<option ${e.department===d?"selected":""}>${d}</option>`).join("")}</select></div>
-    </div>
-    <div class="grid2 row-gap">
-      <div><label class="fl">Access Level</label>
-        <select id="mAccess">${["Team Member","Lead","Manager","Admin","CEO"].map(a=>`<option ${e.accessLevel===a?"selected":""}>${a}</option>`).join("")}</select></div>
-      <div><label class="fl">Status</label>
-        <select id="mStatus">${["To Hire","Active","Inactive"].map(s=>`<option ${e.status===s?"selected":""}>${s}</option>`).join("")}</select></div>
-    </div>
-    <div id="mMsg"></div>
-    <div class="row-actions row-gap">
-      <button class="btn btn-primary" onclick="saveRole('${e.empId}')">Save role & status</button>
-      <button class="btn btn-secondary" onclick="genPin('${e.empId}')">Generate new PIN</button>
-      <button class="btn btn-secondary" onclick="ceoTab='directory';renderCEO()">← Back to directory</button>
-    </div>
-    <div id="pinResult"></div>
-  </div>`;
+  $("ceoBody").innerHTML=`<div class="card"><h3>Manage — ${esc(e.name)}</h3><div class="csub">${esc(e.empId)} · loading options…</div><div class="empty"><span class="spinner"></span></div></div>`;
+  api("formOptions").then(opts=>{
+    if(opts.error){ $("ceoBody").innerHTML=`<div class="card"><div class="msg bad">${esc(opts.error)}</div></div>`; return; }
+    const roleOpts = ['<option value="">Select role</option>'].concat(opts.roles.map(r=>`<option ${e.role===r?"selected":""}>${esc(r)}</option>`)).join("");
+    const deptOpts = ["","Sales","Accounts","Warehouse","Procurement","Marketing","Management"].map(d=>`<option ${e.department===d?"selected":""}>${d}</option>`).join("");
+    // Reporting manager dropdown = everyone at Lead+ access; exclude the person themselves.
+    const mgrList = (opts.managers||[]).filter(m=>m.empId!==e.empId);
+    const mgrOpts = ['<option value="">— None (reports to no one) —</option>']
+      .concat(mgrList.map(m=>{const label=`${m.name} (${m.role||m.accessLevel})`; return `<option value="${esc(label)}" ${e.reportingManager===label?"selected":""}>${esc(label)}</option>`;}))
+      .join("");
+    $("ceoBody").innerHTML=`<div class="card"><h3>Manage — ${esc(e.name)}</h3>
+      <div class="csub">${esc(e.empId)}</div>
+      <div class="grid2">
+        <div><label class="fl">Role</label><select id="mRole">${roleOpts}</select></div>
+        <div><label class="fl">Department</label><select id="mDept">${deptOpts}</select></div>
+      </div>
+      <div class="grid2 row-gap">
+        <div><label class="fl">Access Level</label>
+          <select id="mAccess">${["Team Member","Lead","Manager","Admin","CEO"].map(a=>`<option ${e.accessLevel===a?"selected":""}>${a}</option>`).join("")}</select></div>
+        <div><label class="fl">Status</label>
+          <select id="mStatus">${["To Hire","Active","Inactive"].map(s=>`<option ${e.status===s?"selected":""}>${s}</option>`).join("")}</select></div>
+      </div>
+      <div class="row-gap"><label class="fl">Reporting Manager</label><select id="mMgr">${mgrOpts}</select>
+        <div class="csub" style="margin-top:4px;">Lists everyone with access level Lead / Manager / Admin / CEO.</div></div>
+      <div id="mMsg"></div>
+      <div class="row-actions row-gap">
+        <button class="btn btn-primary" onclick="saveRole('${e.empId}')">Save role & status</button>
+        <button class="btn btn-secondary" onclick="genPin('${e.empId}')">Generate new PIN</button>
+        <button class="btn btn-secondary" onclick="ceoTab='directory';renderCEO()">← Back to directory</button>
+      </div>
+      <div id="pinResult"></div>
+    </div>`;
+  });
 }
 function saveRole(empId){
-  const b={empId,"Role":$("mRole").value,"Department":$("mDept").value,"Access Level":$("mAccess").value,"Status":$("mStatus").value};
+  const b={empId,"Role":$("mRole").value,"Department":$("mDept").value,"Access Level":$("mAccess").value,"Status":$("mStatus").value,"Reporting Manager":$("mMgr").value};
   $("mMsg").innerHTML=`<div class="msg"><span class="spinner"></span> Saving…</div>`;
   api("setRole",b).then(res=>{ $("mMsg").innerHTML=res.error?`<div class="msg bad">${esc(res.error)}</div>`:`<div class="msg ok">✓ Saved.</div>`; });
 }
@@ -552,8 +564,13 @@ function loadSalaryTab(){
 }
 function openSalary(eJson){
   const e=JSON.parse(eJson);
-  api("getCompensation",{empId:e.empId}).then(c=>{
+  Promise.all([api("getCompensation",{empId:e.empId}), api("formOptions")]).then(([c,opts])=>{
     const comp=c.compensation||{};
+    const mgrList=((opts&&opts.managers)||[]).filter(m=>m.empId!==e.empId);
+    const preset = e.reportingManager || "Sashank (Founder/CEO)";
+    const mgrOptions = mgrList.map(m=>{const label=`${m.name} (${m.role||m.accessLevel})`; return `<option value="${esc(label)}" ${preset===label?"selected":""}>${esc(label)}</option>`;}).join("");
+    // Always include a CEO fallback + the preset even if not in the manager list.
+    const fallback = `<option ${preset==="Sashank (Founder/CEO)"?"selected":""}>Sashank (Founder/CEO)</option>`;
     $("ceoBody").innerHTML=`<div class="card"><h3>Salary — ${esc(e.name)} <span style="font-size:11px;color:var(--muted)">🔒 Confidential</span></h3>
       <div class="csub">${esc(e.empId)} · ${esc(e.role||"role not set")}</div>
       <div class="grid2">
@@ -561,7 +578,8 @@ function openSalary(eJson){
         <div><label class="fl">Effective / Joining Date</label><input type="date" id="sDate" value="${esc(comp["Effective Date"]||"")}" /></div>
       </div>
       <label class="fl row-gap">Notes (internal, not shown on letter)</label><textarea id="sNotes">${esc(comp["Notes"]||"")}</textarea>
-      <label class="fl row-gap">Reporting Manager (for letter)</label><input id="sMgr" value="Sashank (Founder/CEO)" />
+      <label class="fl row-gap">Reporting Manager (for letter)</label>
+      <select id="sMgr">${fallback}${mgrOptions}</select>
       <div id="sMsg"></div>
       <div class="row-actions row-gap">
         <button class="btn btn-primary" onclick="saveComp('${e.empId}')">Save salary</button>
