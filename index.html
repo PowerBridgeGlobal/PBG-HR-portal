@@ -224,7 +224,9 @@ function renderEmployee(){
 }
 function empTabBtn(id,label){ return `<button class="tab ${empTab===id?'on':''}" onclick="empTab='${id}';renderEmployee()">${label}</button>`; }
 
+let ACTIVE_HOST="empBody"; // which container the self-service forms render into (empBody or apprBody)
 function loadEmpTab(){
+  ACTIVE_HOST="empBody";
   const body=$("empBody");
   if(empTab==="home"){
     Promise.all([api("leaveBalance"),api("mytraining")]).then(([bal,tr])=>{
@@ -236,30 +238,33 @@ function loadEmpTab(){
             <div class="stat"><div class="n">${bal.Sick!=null?bal.Sick:"—"}</div><div class="l">Sick leave left</div></div>
             <div class="stat"><div class="n">${tr.completed||0}/${tr.total||0}</div><div class="l">Trainings done</div></div>
           </div>
-          <div class="msg warn" style="margin-top:14px;">ℹ Leaves accrue 1 Casual + 1 Sick each month, carry forward within the year, and lapse on 31 March.</div>
+          <div class="msg warn" style="margin-top:14px;">ℹ Leaves accrue 1 Casual + 1 Sick each month, carry forward within the year, and lapse on 31 March. Balance may go negative if you take more.</div>
         </div>`;
     });
   }
-  else if(empTab==="leave") loadLeaveTab();
-  else if(empTab==="advance") loadAdvanceTab();
-  else if(empTab==="expense") loadExpenseTab();
-  else if(empTab==="training") loadEmpTraining();
-  else if(empTab==="profile") loadProfileTab();
+  else if(empTab==="leave") loadLeaveTab("empBody");
+  else if(empTab==="advance") loadAdvanceTab("empBody");
+  else if(empTab==="expense") loadExpenseTab("empBody");
+  else if(empTab==="training") loadEmpTraining("empBody");
+  else if(empTab==="profile") loadProfileTab("empBody");
 }
 
-function loadLeaveTab(){
+function loadLeaveTab(host){
+  host=host||ACTIVE_HOST||"empBody"; ACTIVE_HOST=host;
   Promise.all([api("leaveBalance"),api("myLeaves")]).then(([bal,res])=>{
-    $("empBody").innerHTML=`
+    const cas=bal.Casual, sic=bal.Sick;
+    $(host).innerHTML=`
       <div class="card">
         <h3>Request Leave</h3>
-        <div class="csub">Casual left: <b>${bal.Casual}</b> · Sick left: <b>${bal.Sick}</b>. Use Unpaid if balance is exhausted.</div>
+        <div class="csub">Casual left: <b style="color:${cas<0?'var(--bad)':'inherit'}">${cas}</b> · Sick left: <b style="color:${sic<0?'var(--bad)':'inherit'}">${sic}</b>. You may take more than your balance — it will show as negative.</div>
         <div class="grid3">
-          <div><label class="fl">Type</label><select id="lvType"><option>Casual</option><option>Sick</option><option>Unpaid</option></select></div>
+          <div><label class="fl">Type</label><select id="lvType"><option>Casual</option><option>Sick</option></select></div>
           <div><label class="fl">From</label><input type="date" id="lvFrom" /></div>
           <div><label class="fl">To</label><input type="date" id="lvTo" /></div>
         </div>
         <label class="fl row-gap">Reason</label><textarea id="lvReason"></textarea>
         <div id="lvMsg"></div>
+        <div class="msg warn" style="margin-top:10px;">⚠ Taking leave beyond your balance may affect your year-end performance review and could lead to salary deduction. Please plan leaves carefully.</div>
         <button class="btn btn-primary row-gap" onclick="submitLeave()">Submit request</button>
       </div>
       <div class="card"><h3>My Leave Requests</h3>${leaveTable(res.leaves)}</div>`;
@@ -267,8 +272,10 @@ function loadLeaveTab(){
 }
 function leaveTable(rows){
   if(!rows||!rows.length) return `<div class="empty">No leave requests yet.</div>`;
-  return `<table><tr><th>Type</th><th>From</th><th>To</th><th>Days</th><th>Status</th></tr>
-    ${rows.map(r=>`<tr><td>${esc(r["Leave Type"])}</td><td>${fmtDate(r["From"])}</td><td>${fmtDate(r["To"])}</td><td>${esc(r["Days"])}</td><td>${statusPill(r["Status"])}</td></tr>`).join("")}</table>`;
+  return `<table><tr><th>Type</th><th>From</th><th>To</th><th>Days</th><th>Bal. after</th><th>Status</th></tr>
+    ${rows.map(r=>`<tr><td>${esc(r["Leave Type"])}</td><td>${fmtDate(r["From"])}</td><td>${fmtDate(r["To"])}</td><td>${esc(r["Days"])}</td>
+      <td style="color:${Number(r["Balance After"])<0?'var(--bad)':'inherit'}">${r["Balance After"]!==undefined&&r["Balance After"]!==""?esc(r["Balance After"]):"—"}</td>
+      <td>${statusPill(r["Status"])}</td></tr>`).join("")}</table>`;
 }
 function submitLeave(){
   const b={leaveType:$("lvType").value,fromDate:$("lvFrom").value,toDate:$("lvTo").value,reason:$("lvReason").value};
@@ -276,50 +283,96 @@ function submitLeave(){
   $("lvMsg").innerHTML=`<div class="msg"><span class="spinner"></span> Submitting…</div>`;
   api("requestLeave",b).then(res=>{
     if(res.error){ $("lvMsg").innerHTML=`<div class="msg bad">⚠ ${esc(res.error)}</div>`; return; }
-    loadLeaveTab();
+    if(res.negative){ alert("Submitted. Note: your "+b.leaveType+" balance will be "+res.balanceAfter+" (negative). This may affect your year-end review and could lead to salary deduction."); }
+    loadLeaveTab(ACTIVE_HOST);
   });
 }
 
-function loadAdvanceTab(){
-  api("myAdvances").then(res=>{
-    $("empBody").innerHTML=`
+function loadAdvanceTab(host){
+  host=host||ACTIVE_HOST||"empBody"; ACTIVE_HOST=host;
+  Promise.all([api("myAdvances"),api("advanceUsage"),api("formLists")]).then(([res,usage,lists])=>{
+    const cap=lists.advanceAmountCap, qcap=lists.advanceQuarterCap, emiMax=lists.advanceMaxEmiMonths;
+    $(host).innerHTML=`
       <div class="card"><h3>Request Salary Advance</h3>
-        <div class="csub">Goes to Accounts Lead, then CEO for final approval.</div>
-        <div class="grid3">
-          <div><label class="fl">Amount (₹)</label><input type="number" id="advAmt" /></div>
-          <div><label class="fl">Repay over (months)</label><input type="number" id="advRepay" value="1" /></div>
-          <div></div>
+        <div class="csub">Used this quarter: <b>${usage.count}/${qcap}</b>. Goes to Accounts Lead, then CEO for final approval.</div>
+        <div class="grid2">
+          <div><label class="fl">Amount (₹)</label><input type="number" id="advAmt" oninput="advOnAmt(${cap})" /></div>
+          <div><label class="fl">Advance Type</label>
+            <select id="advType" onchange="advOnType()">
+              <option value="">Select</option>
+              ${lists.advanceTypes.map(t=>`<option>${esc(t)}</option>`).join("")}
+            </select></div>
         </div>
+        <div id="advTypeExtra" class="row-gap"></div>
         <label class="fl row-gap">Reason</label><textarea id="advReason"></textarea>
+        <div id="advOverLimit" class="row-gap"></div>
         <div id="advMsg"></div>
-        <button class="btn btn-primary row-gap" onclick="submitAdvance()">Submit request</button>
+        <button class="btn btn-primary row-gap" onclick="submitAdvance(${cap})">Submit request</button>
       </div>
       <div class="card"><h3>My Advance Requests</h3>${advanceTable(res.advances)}</div>`;
   });
 }
+function advOnType(){
+  const t=$("advType").value, box=$("advTypeExtra");
+  if(t==="Hand Loan"){
+    box.innerHTML=`<label class="fl">Return by date (you commit to repay by this date)</label><input type="date" id="advReturnBy" />`;
+  } else if(t==="EMI Deduction"){
+    box.innerHTML=`<label class="fl">Deduct over how many months (max 3)</label><select id="advEmi"><option>1</option><option>2</option><option>3</option></select>`;
+  } else { box.innerHTML=""; }
+}
+function advOnAmt(cap){
+  const amt=Number($("advAmt").value||0), box=$("advOverLimit");
+  if(amt>cap){
+    box.innerHTML=`<div class="msg warn">This exceeds ₹${cap.toLocaleString('en-IN')}. A signed consent is required — the CEO will decide whether to approve.</div>
+      <label class="fl row-gap">Type your full name as e-signature</label><input id="advSig" placeholder="Your full legal name" />
+      <label style="display:flex;gap:8px;align-items:center;font-size:12.5px;margin-top:8px;color:#4B5568;"><input type="checkbox" id="advConsent" style="width:auto;" /> I consent to this advance and its repayment terms, and confirm this request is genuine.</label>`;
+  } else { box.innerHTML=""; }
+}
 function advanceTable(rows){
   if(!rows||!rows.length) return `<div class="empty">No advance requests yet.</div>`;
-  return `<table><tr><th>Amount</th><th>Reason</th><th>Repay</th><th>Status</th></tr>
-    ${rows.map(r=>`<tr><td>${inr(r["Amount"])}</td><td>${esc(r["Reason"])}</td><td>${esc(r["Repay Over (months)"])} mo</td><td>${statusPill(r["Status"])}</td></tr>`).join("")}</table>`;
+  return `<table><tr><th>Amount</th><th>Type</th><th>Terms</th><th>Over ₹20k</th><th>Status</th></tr>
+    ${rows.map(r=>`<tr><td>${inr(r["Amount"])}</td><td>${esc(r["Advance Type"]||"—")}</td>
+      <td>${r["Advance Type"]==="Hand Loan"?("Return by "+fmtDate(r["Return By Date"])):(r["EMI Months"]?esc(r["EMI Months"])+" mo EMI":"—")}</td>
+      <td>${r["Over Limit"]&&String(r["Over Limit"]).startsWith("YES")?'<span class="pill declined">Yes</span>':'No'}</td>
+      <td>${statusPill(r["Status"])}</td></tr>`).join("")}</table>`;
 }
-function submitAdvance(){
-  const b={amount:$("advAmt").value,repayMonths:$("advRepay").value,reason:$("advReason").value};
-  if(!(Number(b.amount)>0)){ $("advMsg").innerHTML=`<div class="msg bad">Enter a valid amount.</div>`; return; }
+function submitAdvance(cap){
+  const amt=Number($("advAmt").value||0), type=$("advType").value;
+  if(!(amt>0)){ $("advMsg").innerHTML=`<div class="msg bad">Enter a valid amount.</div>`; return; }
+  if(!type){ $("advMsg").innerHTML=`<div class="msg bad">Select an advance type.</div>`; return; }
+  const b={amount:amt,advanceType:type,reason:$("advReason").value};
+  if(type==="Hand Loan"){ b.returnByDate=$("advReturnBy")?$("advReturnBy").value:""; if(!b.returnByDate){ $("advMsg").innerHTML=`<div class="msg bad">Pick a return-by date.</div>`; return; } }
+  if(type==="EMI Deduction"){ b.emiMonths=$("advEmi")?$("advEmi").value:""; }
+  if(amt>cap){
+    const sig=$("advSig")?$("advSig").value.trim():"", consent=$("advConsent")?$("advConsent").checked:false;
+    if(!sig||!consent){ $("advMsg").innerHTML=`<div class="msg bad">For amounts over ₹${cap.toLocaleString('en-IN')}, type your name and tick the consent box.</div>`; return; }
+    b.consentSignature=sig;
+  }
   $("advMsg").innerHTML=`<div class="msg"><span class="spinner"></span> Submitting…</div>`;
-  api("requestAdvance",b).then(res=>{ if(res.error){$("advMsg").innerHTML=`<div class="msg bad">${esc(res.error)}</div>`;return;} loadAdvanceTab(); });
+  api("requestAdvance",b).then(res=>{
+    if(res.error){ $("advMsg").innerHTML=`<div class="msg bad">⚠ ${esc(res.error)}</div>`; return; }
+    loadAdvanceTab(ACTIVE_HOST);
+  });
 }
-
 let expenseProof=null;
-function loadExpenseTab(){
+function loadExpenseTab(host){
+  host=host||ACTIVE_HOST||"empBody"; ACTIVE_HOST=host;
   expenseProof=null;
-  api("myExpenses").then(res=>{
-    $("empBody").innerHTML=`
+  const now=new Date(); const y=now.getFullYear(), m=now.getMonth();
+  const pad=n=>String(n).padStart(2,"0");
+  const minD=`${y}-${pad(m+1)}-01`;
+  const lastDay=new Date(y,m+1,0).getDate();
+  const maxD=`${y}-${pad(m+1)}-${pad(lastDay)}`;
+  const monthName=now.toLocaleDateString("en-IN",{month:"long",year:"numeric"});
+  Promise.all([api("myExpenses"),api("formLists")]).then(([res,lists])=>{
+    $(host).innerHTML=`
       <div class="card"><h3>Submit Expense for Reimbursement</h3>
-        <div class="csub">A printed bill/receipt is required. Handwritten notes can be submitted but are flagged for manual review. Two approvals needed (Accounts Lead → CEO).</div>
+        <div class="csub">Printed bill/receipt required. Handwritten proofs are allowed but flagged for manual review. Only <b>${monthName}</b> expenses can be claimed. Two approvals needed (Accounts Lead → CEO).</div>
         <div class="grid3">
           <div><label class="fl">Amount (₹)</label><input type="number" id="expAmt" /></div>
-          <div><label class="fl">Category</label><input id="expCat" placeholder="Travel, Supplies…" /></div>
-          <div><label class="fl">Spend date</label><input type="date" id="expDate" /></div>
+          <div><label class="fl">Category</label>
+            <select id="expCat"><option value="">Select</option>${lists.expenseCategories.map(c=>`<option>${esc(c)}</option>`).join("")}</select></div>
+          <div><label class="fl">Spend date (this month)</label><input type="date" id="expDate" min="${minD}" max="${maxD}" /></div>
         </div>
         <label class="fl row-gap">Description</label><textarea id="expDesc"></textarea>
         <label class="fl row-gap">Proof (printed bill preferred)</label>
@@ -344,24 +397,28 @@ function submitExpense(){
   if(!expenseProof){ $("expMsg").innerHTML=`<div class="msg bad">Please attach a proof of the spend.</div>`; return; }
   const b={amount:$("expAmt").value,category:$("expCat").value,description:$("expDesc").value,spendDate:$("expDate").value,proof:expenseProof,handwritten:$("expHand").checked};
   if(!(Number(b.amount)>0)){ $("expMsg").innerHTML=`<div class="msg bad">Enter a valid amount.</div>`; return; }
+  if(!b.category){ $("expMsg").innerHTML=`<div class="msg bad">Pick a category.</div>`; return; }
+  if(!b.spendDate){ $("expMsg").innerHTML=`<div class="msg bad">Pick the spend date.</div>`; return; }
   $("expMsg").innerHTML=`<div class="msg"><span class="spinner"></span> Submitting…</div>`;
-  api("submitExpense",b).then(res=>{ if(res.error){$("expMsg").innerHTML=`<div class="msg bad">${esc(res.error)}</div>`;return;} loadExpenseTab(); });
+  api("submitExpense",b).then(res=>{ if(res.error){$("expMsg").innerHTML=`<div class="msg bad">⚠ ${esc(res.error)}</div>`;return;} loadExpenseTab(ACTIVE_HOST); });
 }
 
-function loadEmpTraining(){
+function loadEmpTraining(host){
+  host=host||ACTIVE_HOST||"empBody"; ACTIVE_HOST=host;
   api("mytraining").then(res=>{
-    $("empBody").innerHTML=`<div class="card"><h3>Mandatory Training</h3>
-      <div class="csub">${res.completed}/${res.total} completed. Complete these on the PBG Training Panel.</div>
+    $(host).innerHTML=`<div class="card"><h3>My Trainings</h3>
+      <div class="csub">${res.completed}/${res.total} completed. These are your mandatory modules — complete them on the PBG Training Panel.</div>
       <table><tr><th>Module</th><th>Status</th></tr>
       ${res.modules.map(m=>`<tr><td>${esc(m.module)}</td><td>${statusPill(m.status)}</td></tr>`).join("")}</table>
-      ${res.allDone?`<div class="msg ok" style="margin-top:12px;">✓ All mandatory training complete — you're real-world ready!</div>`:""}
+      ${res.allDone?`<div class="msg ok" style="margin-top:12px;">✓ All mandatory training complete — you're real-world ready!</div>`:`<div class="msg warn" style="margin-top:12px;">Complete all modules to finish your onboarding requirements.</div>`}
     </div>`;
   });
 }
 
-function loadProfileTab(){
+function loadProfileTab(host){
+  host=host||ACTIVE_HOST||"empBody"; ACTIVE_HOST=host;
   api("myProfile").then(p=>{
-    $("empBody").innerHTML=`<div class="card"><h3>My Details</h3>
+    $(host).innerHTML=`<div class="card"><h3>My Details</h3>
       <div class="csub">You can update contact and address details. Name, Aadhaar, and PAN are locked — contact HR for those.</div>
       <div class="grid2">
         <div><label class="fl">Name (locked)</label><input value="${esc(p.name)}" disabled /></div>
@@ -390,12 +447,16 @@ function saveProfile(){
 /* ============================ APPROVER (Accounts Lead) VIEW ============================ */
 let apprTab="approvals";
 function renderApprover(){
+  const isLead = ["Lead","Manager"].indexOf(session.accessLevel)!==-1;
   $("app").innerHTML=`<div class="wrap">
     <div class="tabs">
       ${apprTabBtn("approvals","Approvals")}
-      ${apprTabBtn("training","Training Overview")}
-      ${apprTabBtn("directory","Directory")}
-      ${apprTabBtn("me","My Requests")}
+      ${isLead?apprTabBtn("team","My Team"):""}
+      ${apprTabBtn("leave","Leave")}
+      ${apprTabBtn("advance","Salary Advance")}
+      ${apprTabBtn("expense","Expenses")}
+      ${apprTabBtn("training","My Trainings")}
+      ${apprTabBtn("profile","My Details")}
     </div>
     <div id="apprBody"><div class="empty"><span class="spinner"></span> Loading…</div></div>
   </div>`;
@@ -403,10 +464,28 @@ function renderApprover(){
 }
 function apprTabBtn(id,label){ return `<button class="tab ${apprTab===id?'on':''}" onclick="apprTab='${id}';renderApprover()">${label}</button>`; }
 function loadApprTab(){
+  // approver self-service tabs render into #apprBody using the shared employee renderers
   if(apprTab==="approvals") loadApprovals(false);
-  else if(apprTab==="training") loadTrainingOverview();
-  else if(apprTab==="directory") loadDirectory(false);
-  else if(apprTab==="me") loadMyRequestsForStaff();
+  else if(apprTab==="team") loadMyTeam("apprBody");
+  else if(apprTab==="leave") loadLeaveTab("apprBody");
+  else if(apprTab==="advance") loadAdvanceTab("apprBody");
+  else if(apprTab==="expense") loadExpenseTab("apprBody");
+  else if(apprTab==="training") loadEmpTraining("apprBody");
+  else if(apprTab==="profile") loadProfileTab("apprBody");
+}
+
+function loadMyTeam(host){
+  api("myTeam").then(res=>{
+    if(res.error){ $(host).innerHTML=`<div class="msg bad">${esc(res.error)}</div>`; return; }
+    if(!res.team||!res.team.length){ $(host).innerHTML=`<div class="card"><h3>My Team</h3><div class="empty">No team members report to you yet. (Set their Reporting Manager to you in the roster.)</div></div>`; return; }
+    $(host).innerHTML=`<div class="card"><h3>My Team — ${esc(res.leadName)}</h3>
+      <div class="csub">Overview of members reporting to you. You don't see Admins or the CEO here.</div>
+      <table><tr><th>Name</th><th>Role</th><th>Dept</th><th>Trainings</th><th>Pending Leaves</th><th>Status</th></tr>
+      ${res.team.map(t=>`<tr><td>${esc(t.name)}<br><span style="color:var(--muted)">${esc(t.empId)}</span></td><td>${esc(t.role)}</td><td>${esc(t.department)}</td>
+        <td>${t.trainingsDone}/${t.trainingsTotal}${t.trainingsDone===t.trainingsTotal?' <span class="pill approved">Done</span>':''}</td>
+        <td>${t.pendingLeaves||0}</td><td>${statusPill(t.status||"—")}</td></tr>`).join("")}</table>
+    </div>`;
+  });
 }
 
 /* Shared approvals renderer; isCEO toggles L2 view */
@@ -429,9 +508,14 @@ function leaveApprovalTable(rows){
 }
 function reqApprovalTable(rows,kind,isCEO,amtCol){
   if(!rows||!rows.length) return `<div class="empty">Nothing pending.</div>`;
-  return `<table><tr><th>Employee</th><th>Amount</th><th>Reason</th><th>Stage</th><th></th></tr>
-  ${rows.map(r=>`<tr><td>${esc(r["Name"])}<br><span style="color:var(--muted)">${esc(r["Employee ID"])}</span></td><td>${inr(r[amtCol])}</td><td>${esc(r["Reason"])}</td><td>${statusPill(r["Status"])}</td>
-    <td class="row-actions"><button class="btn btn-ok" onclick="decide('${kind}','${r["Request ID"]}',true)">${isCEO?"Final approve":"Approve (L1)"}</button><button class="btn btn-bad" onclick="decide('${kind}','${r["Request ID"]}',false)">Decline</button></td></tr>`).join("")}</table>`;
+  return `<table><tr><th>Employee</th><th>Amount</th><th>Type / Terms</th><th>Reason</th><th>Over ₹20k</th><th>Stage</th><th></th></tr>
+  ${rows.map(r=>{
+    const terms = r["Advance Type"]==="Hand Loan" ? ("Hand Loan · return "+fmtDate(r["Return By Date"])) : (r["Advance Type"]==="EMI Deduction" ? ("EMI · "+esc(r["EMI Months"])+" mo") : esc(r["Advance Type"]||"—"));
+    const over = r["Over Limit"]&&String(r["Over Limit"]).startsWith("YES");
+    return `<tr><td>${esc(r["Name"])}<br><span style="color:var(--muted)">${esc(r["Employee ID"])}</span></td><td>${inr(r[amtCol])}</td><td>${terms}</td><td>${esc(r["Reason"])}</td>
+    <td>${over?`<span class="pill declined" title="Signed by ${esc(r["Consent Signature"]||"")}">Yes ✍</span>`:'No'}</td><td>${statusPill(r["Status"])}</td>
+    <td class="row-actions"><button class="btn btn-ok" onclick="decide('${kind}','${r["Request ID"]}',true)">${isCEO?"Final approve":"Approve (L1)"}</button><button class="btn btn-bad" onclick="decide('${kind}','${r["Request ID"]}',false)">Decline</button></td></tr>`;
+  }).join("")}</table>`;
 }
 function expenseApprovalTable(rows,isCEO){
   if(!rows||!rows.length) return `<div class="empty">Nothing pending.</div>`;
@@ -473,23 +557,13 @@ function loadDirectory(isCEO){
   });
 }
 
-function loadMyRequestsForStaff(){
-  // Approvers are also employees — let them see/make their own requests via the employee tabs.
-  Promise.all([api("myLeaves"),api("myAdvances"),api("myExpenses")]).then(([lv,adv,exp])=>{
-    $("apprBody").innerHTML=`
-      <div class="card"><h3>My Leaves</h3>${leaveTable(lv.leaves)}</div>
-      <div class="card"><h3>My Advances</h3>${advanceTable(adv.advances)}</div>
-      <div class="card"><h3>My Expenses</h3>${expenseTable(exp.expenses)}</div>
-      <div class="msg warn">To raise a new request, ask an admin to switch your account to the employee view, or use a standard employee login.</div>`;
-  });
-}
-
 /* ============================ CEO VIEW ============================ */
 let ceoTab="approvals";
 function renderCEO(){
   $("app").innerHTML=`<div class="wrap">
     <div class="tabs">
       ${ceoTabBtn("approvals","Approvals")}
+      ${ceoTabBtn("reminders","Reminders")}
       ${ceoTabBtn("directory","Manage Employees")}
       ${ceoTabBtn("training","Training")}
       ${ceoTabBtn("salary","Salary & Letters")}
@@ -502,10 +576,27 @@ function renderCEO(){
 function ceoTabBtn(id,label){ return `<button class="tab ${ceoTab===id?'on':''}" onclick="ceoTab='${id}';renderCEO()">${label}</button>`; }
 function loadCeoTab(){
   if(ceoTab==="approvals") loadApprovals(true);
+  else if(ceoTab==="reminders") loadReminders();
   else if(ceoTab==="directory") loadDirectory(true);
   else if(ceoTab==="training") loadTrainingOverview();
   else if(ceoTab==="salary") loadSalaryTab();
   else if(ceoTab==="attendance") loadAttendanceTab();
+}
+function loadReminders(){
+  api("reminders").then(res=>{
+    if(res.error){ $("ceoBody").innerHTML=`<div class="msg bad">${esc(res.error)}</div>`; return; }
+    const rows=res.reminders||[];
+    $("ceoBody").innerHTML=`<div class="card"><h3>Reminders — due today or earlier</h3>
+      <div class="csub">Leave alerts (day before & day of) and Hand Loan return dates. Dismiss once actioned.</div>
+      ${!rows.length?`<div class="empty">Nothing due right now.</div>`:
+      `<table><tr><th>Type</th><th>Employee</th><th>Detail</th><th>Trigger date</th><th></th></tr>
+        ${rows.map(r=>`<tr><td>${esc(r["Type"])}</td><td>${esc(r["Name"])}<br><span style="color:var(--muted)">${esc(r["Employee ID"])}</span></td><td>${esc(r["Detail"])}</td><td>${fmtDate(r["Trigger Date"])}</td>
+          <td><button class="btn btn-secondary" onclick="dismissReminder('${r["Reminder ID"]}')">Dismiss</button></td></tr>`).join("")}</table>`}
+    </div>`;
+  });
+}
+function dismissReminder(id){
+  api("dismissReminder",{reminderId:id}).then(()=>loadReminders());
 }
 
 function openManage(eJson){
