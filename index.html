@@ -504,14 +504,44 @@ function inWords(n){
   return out.trim()+" Rupees Only";
 }
 
+// Opens the Training Panel in a new tab, already logged in (SSO token).
+function openTrainingPanel(btnId){
+  const btn = btnId?$(btnId):null;
+  if(btn){ btn.disabled=true; btn.innerHTML=`<span class="spinner"></span> Opening…`; }
+  // Open the tab synchronously so the browser doesn't treat it as a popup.
+  const tab = window.open("", "_blank");
+  api("issueSsoToken").then(res=>{
+    if(btn){ btn.disabled=false; btn.innerHTML="🎓 Open Training Panel"; }
+    if(res.error||!res.url){
+      if(tab) tab.close();
+      alert(res.error||"Could not open the Training Panel. Please try again.");
+      return;
+    }
+    if(tab) tab.location.href=res.url; else window.open(res.url,"_blank");
+  }).catch(e=>{
+    if(btn){ btn.disabled=false; btn.innerHTML="🎓 Open Training Panel"; }
+    if(tab) tab.close();
+    alert("Could not open the Training Panel: "+(e.message||e));
+  });
+}
+
 function loadEmpTraining(host){
   host=host||ACTIVE_HOST||"empBody"; ACTIVE_HOST=host;
   api("mytraining").then(res=>{
+    if(res.error){ $(host).innerHTML=`<div class="msg bad">${esc(res.error)}</div>`; return; }
+    const pct=res.percent!=null?res.percent:0;
     $(host).innerHTML=`<div class="card"><h3>My Trainings</h3>
-      <div class="csub">${res.completed}/${res.total} completed. These are your mandatory modules — complete them on the PBG Training Panel.</div>
-      <table><tr><th>Module</th><th>Status</th></tr>
-      ${res.modules.map(m=>`<tr><td>${esc(m.module)}</td><td>${statusPill(m.status)}</td></tr>`).join("")}</table>
-      ${res.allDone?`<div class="msg ok" style="margin-top:12px;">✓ All mandatory training complete — you're real-world ready!</div>`:`<div class="msg warn" style="margin-top:12px;">Complete all modules to finish your onboarding requirements.</div>`}
+      <div class="csub">${res.completed}/${res.total} completed (${pct}%). Complete these on the PBG Training Panel — you'll be logged in automatically.</div>
+      <div style="background:#EEF1F7;border-radius:20px;height:9px;overflow:hidden;margin:12px 0 16px;">
+        <div style="background:var(--gold);height:100%;width:${pct}%;transition:width .4s;"></div>
+      </div>
+      <table><tr><th>Module</th><th>Status</th><th>Score</th></tr>
+      ${res.modules.map(m=>`<tr><td>${esc(m.module)}</td><td>${statusPill(m.status)}</td>
+        <td>${(m.score!==undefined&&m.score!=="")?esc(m.score)+(m.total?" / "+esc(m.total):""):"—"}</td></tr>`).join("")}</table>
+      ${res.allDone
+        ?`<div class="msg ok" style="margin-top:12px;">✓ All mandatory training complete — you're real-world ready!</div>`
+        :`<div class="msg warn" style="margin-top:12px;">Complete all modules to finish your onboarding requirements.</div>`}
+      <button id="trBtn" class="btn btn-primary row-gap" onclick="openTrainingPanel('trBtn')">🎓 Open Training Panel</button>
     </div>`;
   });
 }
@@ -549,9 +579,11 @@ function saveProfile(){
 let apprTab="approvals";
 function renderApprover(){
   const isLead = ["Lead","Manager"].indexOf(session.accessLevel)!==-1;
+  const isAdmin = session.accessLevel==="Admin";
   $("app").innerHTML=`<div class="wrap">
     <div class="tabs">
       ${apprTabBtn("approvals","Approvals")}
+      ${isAdmin?apprTabBtn("trainingdash","Training Dashboard"):""}
       ${isLead?apprTabBtn("team","My Team"):""}
       ${apprTabBtn("leave","Leave")}
       ${apprTabBtn("advance","Salary Advance")}
@@ -568,6 +600,7 @@ function apprTabBtn(id,label){ return `<button class="tab ${apprTab===id?'on':''
 function loadApprTab(){
   // approver self-service tabs render into #apprBody using the shared employee renderers
   if(apprTab==="approvals") loadApprovals(false);
+  else if(apprTab==="trainingdash") loadTrainingOverview();
   else if(apprTab==="team") loadMyTeam("apprBody");
   else if(apprTab==="leave") loadLeaveTab("apprBody");
   else if(apprTab==="advance") loadAdvanceTab("apprBody");
@@ -640,11 +673,36 @@ function loadTrainingOverview(){
   const host = session.view==="ceo" ? "ceoBody" : "apprBody";
   api("trainingOverview").then(res=>{
     if(res.error){ $(host).innerHTML=`<div class="msg bad">${esc(res.error)}</div>`; return; }
-    $(host).innerHTML=`<div class="card"><h3>Training Completion — All Employees</h3>
-      <div class="csub">Mandatory: ${res.mandatory.join(", ")}</div>
-      <table><tr><th>Employee</th><th>Department</th><th>Completed</th></tr>
-      ${res.employees.map(e=>`<tr><td>${esc(e.name)}<br><span style="color:var(--muted)">${esc(e.empId)}</span></td><td>${esc(e.department)}</td><td>${e.completed}/${e.total} ${e.completed===e.total?'<span class="pill approved">Done</span>':''}</td></tr>`).join("")}</table>
-    </div>`;
+    const emps=res.employees||[];
+    const doneCount=emps.filter(e=>e.total>0&&e.completed===e.total).length;
+    const avg=emps.length?Math.round(emps.reduce((s,e)=>s+(e.percent||0),0)/emps.length):0;
+    $(host).innerHTML=`
+      <div class="card"><h3>Employee Training Dashboard</h3>
+        <div class="csub">Live completion status across the team. Source: ${esc(res.source||"—")}</div>
+        <div class="stat-grid">
+          <div class="stat"><div class="n">${emps.length}</div><div class="l">Employees</div></div>
+          <div class="stat"><div class="n">${doneCount}</div><div class="l">Fully trained</div></div>
+          <div class="stat"><div class="n">${avg}%</div><div class="l">Avg completion</div></div>
+          <div class="stat"><div class="n">${(res.modules&&res.modules.length)||res.mandatory.length}</div><div class="l">Modules</div></div>
+        </div>
+      </div>
+      <div class="card"><h3>Per-Employee Status</h3>
+        ${!emps.length?`<div class="empty">No employees found.</div>`:
+        `<table><tr><th>Employee</th><th>Role</th><th>Dept</th><th>Progress</th><th>Status</th></tr>
+        ${emps.map(e=>`<tr>
+          <td>${esc(e.name)}<br><span style="color:var(--muted)">${esc(e.empId)}</span></td>
+          <td>${esc(e.role||"—")}</td><td>${esc(e.department||"—")}</td>
+          <td style="min-width:150px;">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <div style="flex:1;background:#EEF1F7;border-radius:20px;height:7px;overflow:hidden;">
+                <div style="background:${e.percent===100?'var(--ok)':'var(--gold)'};height:100%;width:${e.percent||0}%;"></div>
+              </div>
+              <span style="font-size:11px;font-weight:700;color:var(--navy);white-space:nowrap;">${e.completed}/${e.total}</span>
+            </div>
+          </td>
+          <td>${e.total>0&&e.completed===e.total?'<span class="pill approved">Complete</span>':(e.completed>0?'<span class="pill pending">In progress</span>':'<span class="pill declined">Not started</span>')}</td>
+        </tr>`).join("")}</table>`}
+      </div>`;
   });
 }
 
@@ -668,7 +726,8 @@ function renderCEO(){
       ${ceoTabBtn("approvals","Approvals")}
       ${ceoTabBtn("reminders","Reminders")}
       ${ceoTabBtn("directory","Manage Employees")}
-      ${ceoTabBtn("training","Training")}
+      ${ceoTabBtn("training","Training Dashboard")}
+      ${ceoTabBtn("mytraining","My Trainings")}
       ${ceoTabBtn("salary","Salary & Letters")}
       ${ceoTabBtn("payslips","Payslips")}
       ${ceoTabBtn("attendance","Attendance / Payroll")}
@@ -683,6 +742,7 @@ function loadCeoTab(){
   else if(ceoTab==="reminders") loadReminders();
   else if(ceoTab==="directory") loadDirectory(true);
   else if(ceoTab==="training") loadTrainingOverview();
+  else if(ceoTab==="mytraining") loadEmpTraining("ceoBody");
   else if(ceoTab==="salary") loadSalaryTab();
   else if(ceoTab==="payslips") loadCeoPayslips();
   else if(ceoTab==="attendance") loadAttendanceTab();
