@@ -215,8 +215,11 @@ function renderEmployee(){
       ${empTabBtn("leave","Leave")}
       ${empTabBtn("advance","Salary Advance")}
       ${empTabBtn("expense","Expenses")}
+      ${empTabBtn("kra","My KRAs")}
+      ${empTabBtn("reviews","My Review")}
       ${empTabBtn("payslips","Payslips")}
       ${empTabBtn("training","Training")}
+      ${empTabBtn("concern","Raise a Concern")}
       ${empTabBtn("profile","My Details")}
     </div>
     <div id="empBody"><div class="empty"><span class="spinner"></span> Loading…</div></div>
@@ -246,6 +249,9 @@ function loadEmpTab(){
   else if(empTab==="leave") loadLeaveTab("empBody");
   else if(empTab==="advance") loadAdvanceTab("empBody");
   else if(empTab==="expense") loadExpenseTab("empBody");
+  else if(empTab==="kra") loadMyKra("empBody");
+  else if(empTab==="reviews") loadMyReviews("empBody");
+  else if(empTab==="concern") loadGrievance("empBody");
   else if(empTab==="payslips") loadMyPayslips("empBody");
   else if(empTab==="training") loadEmpTraining("empBody");
   else if(empTab==="profile") loadProfileTab("empBody");
@@ -575,21 +581,501 @@ function saveProfile(){
   api("updateMyDetails",b).then(res=>{ $("pfMsg").innerHTML=res.error?`<div class="msg bad">${esc(res.error)}</div>`:`<div class="msg ok">✓ Saved.</div>`; });
 }
 
-/* ============================ APPROVER (Accounts Lead) VIEW ============================ */
+/* =====================================================================
+   PERFORMANCE MODULE (shared UI)
+   ===================================================================== */
+const RATING_LABELS={5:"Outstanding",4:"Exceeds",3:"Meets",2:"Partially Meets",1:"Below Expectations"};
+function ratingPill(r){
+  if(!r) return `<span class="pill pending">—</span>`;
+  const n=Number(r);
+  const cls = n>=4?"approved" : n===3?"l2" : "declined";
+  return `<span class="pill ${cls}">${n} · ${esc(RATING_LABELS[n]||"")}</span>`;
+}
+function ratingSelect(id,val){
+  return `<select id="${id}">
+    <option value="">Select rating</option>
+    ${[5,4,3,2,1].map(n=>`<option value="${n}" ${String(val)===String(n)?"selected":""}>${n} — ${RATING_LABELS[n]}</option>`).join("")}
+  </select>`;
+}
+
+/* ---------------- Employee: My KRA / KPI ---------------- */
+function loadMyKra(host){
+  host=host||ACTIVE_HOST||"empBody"; ACTIVE_HOST=host;
+  api("myKra").then(res=>{
+    if(res.error){ $(host).innerHTML=`<div class="msg bad">${esc(res.error)}</div>`; return; }
+    const rows=res.rows||[];
+    const acked=rows.length&&rows.every(r=>r["Status"]==="Acknowledged");
+    const approved=rows.length&&rows.some(r=>r["Status"]==="Approved");
+    $(host).innerHTML=`<div class="card"><h3>My KRAs & KPIs — ${esc(res.quarter)}</h3>
+      <div class="csub">What you're accountable for this quarter, and how it's measured.</div>
+      ${!rows.length?`<div class="empty">Your KRAs for ${esc(res.quarter)} haven't been set yet. HR will draft them and the CEO will approve.</div>`:
+      `<table><tr><th>KRA</th><th>KPI</th><th>Target</th><th>Weight</th><th>Status</th></tr>
+        ${rows.map(r=>`<tr><td><b>${esc(r["KRA"])}</b></td><td>${esc(r["KPI"])}</td><td>${esc(r["Target"]||"—")}</td><td>${esc(r["Weight %"])}%</td><td>${statusPill(r["Status"])}</td></tr>`).join("")}</table>
+      ${approved&&!acked?`<div class="msg warn" style="margin-top:12px;">Please review and acknowledge that you understand these targets.</div>
+        <button class="btn btn-primary row-gap" onclick="ackKra('${esc(res.quarter)}')">✓ I acknowledge these KRAs</button>`:""}
+      ${acked?`<div class="msg ok" style="margin-top:12px;">✓ Acknowledged. These are your targets for ${esc(res.quarter)}.</div>`:""}`}
+    </div>`;
+  });
+}
+function ackKra(q){
+  api("acknowledgeKra",{quarter:q}).then(res=>{
+    if(res.error){ alert(res.error); return; }
+    loadMyKra(ACTIVE_HOST);
+  });
+}
+
+/* ---------------- Employee: My Reviews + self-appraisal ---------------- */
+function loadMyReviews(host){
+  host=host||ACTIVE_HOST||"empBody"; ACTIVE_HOST=host;
+  Promise.all([api("myReviews"),api("myKra")]).then(([res,kra])=>{
+    if(res.error){ $(host).innerHTML=`<div class="msg bad">${esc(res.error)}</div>`; return; }
+    const q=res.currentQuarter;
+    const thisQ=(res.reviews||[]).filter(r=>r.quarter===q)[0];
+    const canSelf=!thisQ||thisQ.stage==="Self-Appraisal";
+    $(host).innerHTML=`
+      ${canSelf?`<div class="card"><h3>Self-Appraisal — ${esc(q)}</h3>
+        <div class="csub">Rate yourself honestly against your KRAs, then add context. HR reviews this, then the CEO decides.</div>
+        ${!(kra.rows||[]).length?`<div class="msg warn">Your KRAs for this quarter aren't set yet. You can still submit, but it's better to wait until targets are agreed.</div>`:
+          `<table style="margin-bottom:12px;"><tr><th>KRA</th><th>KPI</th><th>Target</th></tr>
+           ${kra.rows.map(r=>`<tr><td>${esc(r["KRA"])}</td><td>${esc(r["KPI"])}</td><td>${esc(r["Target"]||"—")}</td></tr>`).join("")}</table>`}
+        <label class="fl">Your overall self-rating</label>
+        ${ratingSelect("saRating","")}
+        <label class="fl row-gap">Your comments — what went well, what didn't, evidence</label>
+        <textarea id="saComments" style="min-height:110px;"></textarea>
+        <div id="saMsg"></div>
+        <div class="msg warn" style="margin-top:10px;">A rating of 3 (“Meets”) means you delivered your targets. That's a good result, not a criticism.</div>
+        <button class="btn btn-primary row-gap" onclick="submitSelfAppraisal('${esc(q)}')">Submit self-appraisal</button>
+      </div>`:`<div class="card"><h3>Self-Appraisal — ${esc(q)}</h3>
+        <div class="msg ok">✓ Submitted. Currently with: <b>${esc(thisQ.stage)}</b>.</div></div>`}
+
+      <div class="card"><h3>My Review History</h3>
+        ${!(res.reviews||[]).length?`<div class="empty">No reviews yet.</div>`:
+        `<table><tr><th>Quarter</th><th>Self</th><th>Final</th><th>Stage</th><th>CEO comments</th></tr>
+        ${res.reviews.map(r=>`<tr><td>${esc(r.quarter)}</td><td>${r.selfRating?ratingPill(r.selfRating):"—"}</td>
+          <td>${r.finalRating?ratingPill(r.finalRating):"—"}</td><td>${statusPill(r.stage)}</td>
+          <td>${esc(r.ceoComments||"—")}</td></tr>`).join("")}</table>`}
+      </div>`;
+  });
+}
+function submitSelfAppraisal(q){
+  const rating=$("saRating").value, comments=$("saComments").value;
+  if(!rating){ $("saMsg").innerHTML=`<div class="msg bad">Pick a rating.</div>`; return; }
+  $("saMsg").innerHTML=`<div class="msg"><span class="spinner"></span> Submitting…</div>`;
+  api("submitSelfAppraisal",{quarter:q,rating,comments}).then(res=>{
+    if(res.error){ $("saMsg").innerHTML=`<div class="msg bad">${esc(res.error)}</div>`; return; }
+    loadMyReviews(ACTIVE_HOST);
+  });
+}
+
+/* ---------------- Employee: Grievance ---------------- */
+function loadGrievance(host){
+  host=host||ACTIVE_HOST||"empBody"; ACTIVE_HOST=host;
+  api("myGrievances").then(res=>{
+    if(res.error){ $(host).innerHTML=`<div class="msg bad">${esc(res.error)}</div>`; return; }
+    $(host).innerHTML=`<div class="card"><h3>Raise a Concern</h3>
+      <div class="csub">Anything about treatment, safety, pay, workload, or conduct. Handled discreetly.</div>
+      <div class="grid2">
+        <div><label class="fl">Category</label>
+          <select id="grCat">${res.categories.map(c=>`<option>${esc(c)}</option>`).join("")}</select></div>
+        <div><label class="fl">Route to</label>
+          <select id="grRoute">${res.routes.map(r=>`<option>${esc(r)}</option>`).join("")}</select></div>
+      </div>
+      <label class="fl row-gap">What happened?</label>
+      <textarea id="grDetails" style="min-height:120px;" placeholder="Be as specific as you can — dates, people, what was said or done."></textarea>
+      <label style="display:flex;gap:8px;align-items:center;font-size:12.5px;margin-top:10px;color:#4B5568;">
+        <input type="checkbox" id="grConf" style="width:auto;" /> Treat this as confidential
+      </label>
+      <div id="grMsg"></div>
+      <div class="msg warn" style="margin-top:10px;">Retaliation against anyone who raises a concern in good faith is a serious disciplinary matter at PBG. If your concern is about HR or your manager, route it directly to the CEO.</div>
+      <button class="btn btn-primary row-gap" onclick="submitGrievance()">Submit</button>
+    </div>
+    <div class="card"><h3>My Concerns</h3>
+      ${!(res.grievances||[]).length?`<div class="empty">You haven't raised any concerns.</div>`:
+      `<table><tr><th>Raised</th><th>Category</th><th>Routed to</th><th>Status</th><th>Resolution</th></tr>
+      ${res.grievances.map(g=>`<tr><td>${fmtDate(g["Raised At"])}</td><td>${esc(g["Category"])}</td><td>${esc(g["Route"])}</td>
+        <td>${statusPill(g["Status"])}</td><td>${esc(g["Resolution"]||"—")}</td></tr>`).join("")}</table>`}
+    </div>`;
+  });
+}
+function submitGrievance(){
+  const b={category:$("grCat").value,route:$("grRoute").value,details:$("grDetails").value,confidential:$("grConf").checked};
+  if(!b.details.trim()){ $("grMsg").innerHTML=`<div class="msg bad">Please describe the concern.</div>`; return; }
+  $("grMsg").innerHTML=`<div class="msg"><span class="spinner"></span> Submitting…</div>`;
+  api("raiseGrievance",b).then(res=>{
+    if(res.error){ $("grMsg").innerHTML=`<div class="msg bad">${esc(res.error)}</div>`; return; }
+    alert(res.note||"Logged.");
+    loadGrievance(ACTIVE_HOST);
+  });
+}
+
+/* ---------------- HR/CEO: KRA management ---------------- */
+let kraRows=[];
+let KRA_CTX={emp:null,quarter:"",quarters:[],status:"None",host:"ceoBody"};
+let EMP_CACHE=[];
+
+function loadKraManage(host){
+  api("allEmployees").then(res=>{
+    if(res.error){ $(host).innerHTML=`<div class="msg bad">${esc(res.error)}</div>`; return; }
+    EMP_CACHE=res.employees||[];
+    $(host).innerHTML=`<div class="card"><h3>KRAs & KPIs</h3>
+      <div class="csub">HR drafts, CEO approves, employee acknowledges. Weights must total 100%.</div>
+      <table><tr><th>Employee</th><th>Role</th><th></th></tr>
+      ${EMP_CACHE.map((e,i)=>`<tr><td>${esc(e.name)}<br><span style="color:var(--muted)">${esc(e.empId)}</span></td><td>${esc(e.role||"—")}</td>
+        <td><button class="btn btn-secondary" onclick="openKra(${i},'${host}')">Set KRAs</button></td></tr>`).join("")}</table>
+    </div>`;
+  });
+}
+function openKra(idx,host){
+  const e=EMP_CACHE[idx];
+  if(!e) return;
+  api("getKra",{targetEmpId:e.empId}).then(res=>{
+    if(res.error){ alert(res.error); return; }
+    kraRows = (res.rows&&res.rows.length)
+      ? res.rows.map(r=>({kra:r["KRA"],kpi:r["KPI"],target:r["Target"],weight:r["Weight %"]}))
+      : (res.template||[]).map(t=>({kra:t.kra,kpi:t.kpi,target:"",weight:""}));
+    if(!kraRows.length) kraRows=[{kra:"",kpi:"",target:"",weight:""}];
+    KRA_CTX={emp:e,quarter:res.quarter,quarters:res.quarters||[res.quarter],
+             status:(res.rows&&res.rows.length)?String(res.rows[0]["Status"]):"None",host};
+    renderKraEditor();
+  });
+}
+function renderKraEditor(){
+  const {emp:e,quarter,quarters,status,host}=KRA_CTX;
+  const total=kraRows.reduce((s,r)=>s+Number(r.weight||0),0);
+  const isCEO=session.view==="ceo";
+  $(host).innerHTML=`<div class="card"><h3>KRAs — ${esc(e.name)}</h3>
+    <div class="csub">${esc(e.empId)} · ${esc(e.role||"role not set")} · Status: ${statusPill(status)}</div>
+    <label class="fl">Quarter</label>
+    <select id="kraQ" onchange="reloadKraQuarter(this.value)">
+      ${quarters.map(q=>`<option ${q===quarter?"selected":""}>${esc(q)}</option>`).join("")}
+    </select>
+    <table style="margin-top:14px;"><tr><th style="width:22%">KRA</th><th style="width:30%">KPI</th><th style="width:22%">Target</th><th style="width:12%">Weight %</th><th></th></tr>
+    ${kraRows.map((r,i)=>`<tr>
+      <td><input value="${esc(r.kra)}" oninput="kraRows[${i}].kra=this.value" /></td>
+      <td><input value="${esc(r.kpi)}" oninput="kraRows[${i}].kpi=this.value" /></td>
+      <td><input value="${esc(r.target)}" placeholder="e.g. \u2265 95%" oninput="kraRows[${i}].target=this.value" /></td>
+      <td><input type="number" value="${esc(r.weight)}" oninput="kraRows[${i}].weight=this.value;updateKraTotal()" /></td>
+      <td><button class="btn btn-bad" onclick="kraRemoveRow(${i})">\u2715</button></td>
+    </tr>`).join("")}
+    </table>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;">
+      <button class="btn btn-secondary" onclick="kraAddRow()">+ Add row</button>
+      <div id="kraTotal" style="font-weight:800;color:${total===100?'var(--ok)':'var(--bad)'};">Total weight: ${total}%</div>
+    </div>
+    <div id="kraMsg"></div>
+    <div class="row-actions row-gap">
+      <button class="btn btn-primary" onclick="saveKra()">Save draft</button>
+      ${isCEO?`<button class="btn btn-ok" onclick="approveKra()">\u2713 Approve (CEO)</button>`:""}
+      <button class="btn btn-secondary" onclick="loadKraManage('${host}')">\u2190 Back</button>
+    </div>
+    ${!isCEO?`<div class="msg warn" style="margin-top:10px;">Saved as a draft. The CEO must approve before the employee sees it.</div>`:""}
+  </div>`;
+}
+function kraAddRow(){ kraRows.push({kra:"",kpi:"",target:"",weight:""}); renderKraEditor(); }
+function kraRemoveRow(i){ kraRows.splice(i,1); if(!kraRows.length) kraRows=[{kra:"",kpi:"",target:"",weight:""}]; renderKraEditor(); }
+function updateKraTotal(){
+  const t=kraRows.reduce((s,r)=>s+Number(r.weight||0),0);
+  const el=$("kraTotal");
+  if(el){ el.textContent="Total weight: "+t+"%"; el.style.color=t===100?"var(--ok)":"var(--bad)"; }
+}
+function reloadKraQuarter(q){
+  api("getKra",{targetEmpId:KRA_CTX.emp.empId,quarter:q}).then(res=>{
+    kraRows=(res.rows&&res.rows.length)?res.rows.map(r=>({kra:r["KRA"],kpi:r["KPI"],target:r["Target"],weight:r["Weight %"]}))
+      :(res.template||[]).map(t=>({kra:t.kra,kpi:t.kpi,target:"",weight:""}));
+    if(!kraRows.length) kraRows=[{kra:"",kpi:"",target:"",weight:""}];
+    KRA_CTX.quarter=q;
+    KRA_CTX.status=(res.rows&&res.rows.length)?String(res.rows[0]["Status"]):"None";
+    renderKraEditor();
+  });
+}
+function saveKra(){
+  const q=$("kraQ").value;
+  $("kraMsg").innerHTML=`<div class="msg"><span class="spinner"></span> Saving\u2026</div>`;
+  api("saveKra",{targetEmpId:KRA_CTX.emp.empId,quarter:q,rows:kraRows}).then(res=>{
+    $("kraMsg").innerHTML=res.error?`<div class="msg bad">\u26a0 ${esc(res.error)}</div>`:`<div class="msg ok">\u2713 Draft saved for ${esc(res.quarter)}.</div>`;
+  });
+}
+function approveKra(){
+  const q=$("kraQ").value;
+  api("approveKra",{targetEmpId:KRA_CTX.emp.empId,quarter:q}).then(res=>{
+    $("kraMsg").innerHTML=res.error?`<div class="msg bad">${esc(res.error)}</div>`:`<div class="msg ok">\u2713 Approved. The employee can now acknowledge.</div>`;
+  });
+}
+
+/* ---------------- HR/CEO: Review queue ---------------- */
+let REVIEW_CACHE=[];
+function loadReviewQueue(host,quarter){
+  api("reviewQueue",quarter?{quarter}:{}).then(res=>{
+    if(res.error){ $(host).innerHTML=`<div class="msg bad">${esc(res.error)}</div>`; return; }
+    REVIEW_CACHE=res.reviews||[];
+    const stageLabel=res.isCEO?"awaiting your final decision":"awaiting your HR review";
+    $(host).innerHTML=`<div class="card"><h3>Performance Reviews — ${esc(res.quarter)}</h3>
+      <div class="csub">Self-appraisal → HR review → CEO decision. Highlighted rows are ${stageLabel}.</div>
+      <label class="fl">Quarter</label>
+      <select id="rqQ" onchange="loadReviewQueue('${host}',this.value)">
+        ${res.quarters.map(q=>`<option ${q===res.quarter?"selected":""}>${esc(q)}</option>`).join("")}
+      </select>
+      <table style="margin-top:12px;"><tr><th>Employee</th><th>Stage</th><th>Self</th><th>HR</th><th>Final</th><th>Training</th><th></th></tr>
+      ${REVIEW_CACHE.map((r,i)=>`<tr style="${r.actionable?'background:#FFF9EC;':''}">
+        <td>${esc(r.name)}<br><span style="color:var(--muted)">${esc(r.empId)} · ${esc(r.role||"—")}</span></td>
+        <td>${statusPill(r.stage)}</td>
+        <td>${r.selfRating?ratingPill(r.selfRating):"—"}</td>
+        <td>${r.hrRating?ratingPill(r.hrRating):"—"}</td>
+        <td>${r.finalRating?ratingPill(r.finalRating):"—"}</td>
+        <td>${r.trainingComplete?'<span class="pill approved">Done</span>':`<span class="pill declined">${r.trainingDone}/${r.trainingTotal}</span>`}</td>
+        <td><button class="btn ${r.actionable?'btn-primary':'btn-secondary'}" onclick="openReview(${i},'${esc(res.quarter)}','${host}',${res.isCEO})">${r.actionable?'Review':'View'}</button></td>
+      </tr>`).join("")}</table>
+    </div>`;
+  });
+}
+function openReview(idx,quarter,host,isCEO){
+  const r=REVIEW_CACHE[idx];
+  if(!r) return;
+  const canAct = isCEO ? r.stage==="CEO Review" : r.stage==="HR Review";
+  $(host).innerHTML=`<div class="card"><h3>Review — ${esc(r.name)}</h3>
+    <div class="csub">${esc(r.empId)} · ${esc(r.role||"—")} · ${esc(quarter)} · Stage: ${statusPill(r.stage)}</div>
+
+    <div class="stat-grid" style="margin-bottom:16px;">
+      <div class="stat"><div class="n">${r.selfRating||"—"}</div><div class="l">Self-rating</div></div>
+      <div class="stat"><div class="n">${r.hrRating||"—"}</div><div class="l">HR rating</div></div>
+      <div class="stat"><div class="n">${r.trainingDone}/${r.trainingTotal}</div><div class="l">Training</div></div>
+    </div>
+
+    ${r.selfComments?`<label class="fl">Employee's own words</label>
+      <div class="card" style="background:#FAFBFE;padding:12px;margin-bottom:12px;font-size:13px;">${esc(r.selfComments)}</div>`:
+      `<div class="msg warn">No self-appraisal submitted yet.</div>`}
+
+    ${isCEO&&r.hrComments?`<label class="fl">HR's assessment</label>
+      <div class="card" style="background:#FAFBFE;padding:12px;margin-bottom:12px;font-size:13px;">${esc(r.hrComments)}
+      ${r.hrRecommendation?`<div style="margin-top:8px;"><b>Recommendation:</b> ${esc(r.hrRecommendation)}</div>`:""}</div>`:""}
+
+    ${!r.trainingComplete?`<div class="msg warn">⚠ Mandatory training is incomplete. Per the Handbook, this employee cannot be rated above 3 this quarter.</div>`:""}
+
+    ${canAct?`
+      <label class="fl row-gap">${isCEO?"Final rating (CEO)":"Your rating (HR)"}</label>
+      ${ratingSelect("rvRating","")}
+      <label class="fl row-gap">Comments</label>
+      <textarea id="rvComments" style="min-height:100px;"></textarea>
+      ${isCEO?`<label class="fl row-gap">Decision / next steps</label>
+        <input id="rvDecision" placeholder="e.g. Confirm, standard increase, PIP…" />`
+        :`<label class="fl row-gap">Your recommendation to the CEO</label>
+        <input id="rvRec" placeholder="e.g. Recommend standard increase" />`}
+      <div id="rvMsg"></div>
+      <div class="row-actions row-gap">
+        <button class="btn btn-primary" onclick="submitReview('${esc(r.empId)}','${esc(quarter)}','${host}',${isCEO})">${isCEO?"Submit final decision":"Submit HR review"}</button>
+        <button class="btn btn-secondary" onclick="loadReviewQueue('${host}','${esc(quarter)}')">← Back</button>
+      </div>`
+    :`<div class="msg">Nothing for you to action at this stage.</div>
+      <button class="btn btn-secondary row-gap" onclick="loadReviewQueue('${host}','${esc(quarter)}')">← Back</button>`}
+  </div>`;
+}
+function submitReview(empId,quarter,host,isCEO){
+  const rating=$("rvRating").value;
+  if(!rating){ $("rvMsg").innerHTML=`<div class="msg bad">Pick a rating.</div>`; return; }
+  const b={targetEmpId:empId,quarter,rating,comments:$("rvComments").value};
+  if(isCEO) b.decision=$("rvDecision")?$("rvDecision").value:"";
+  else b.recommendation=$("rvRec")?$("rvRec").value:"";
+  $("rvMsg").innerHTML=`<div class="msg"><span class="spinner"></span> Submitting…</div>`;
+  api(isCEO?"submitCeoReview":"submitHrReview",b).then(res=>{
+    if(res.error){ $("rvMsg").innerHTML=`<div class="msg bad">⚠ ${esc(res.error)}</div>`; return; }
+    loadReviewQueue(host,quarter);
+  });
+}
+
+/* ---------------- HR/CEO: Grievance queue ---------------- */
+function loadGrievanceQueue(host){
+  api("grievanceQueue").then(res=>{
+    if(res.error){ $(host).innerHTML=`<div class="msg bad">${esc(res.error)}</div>`; return; }
+    const rows=res.grievances||[];
+    $(host).innerHTML=`<div class="card"><h3>Grievances</h3>
+      <div class="csub">${res.isCEO?"All concerns, including those escalated directly to you.":"Concerns routed to HR. Anything an employee escalated directly to the CEO is not shown here."}</div>
+      ${!rows.length?`<div class="empty">No concerns raised.</div>`:
+      `<table><tr><th>Raised</th><th>From</th><th>Category</th><th>Route</th><th>Details</th><th>Status</th><th></th></tr>
+      ${rows.map(g=>`<tr>
+        <td>${fmtDate(g["Raised At"])}</td>
+        <td>${esc(g["Name"])}<br><span style="color:var(--muted)">${esc(g["Employee ID"])}</span></td>
+        <td>${esc(g["Category"])}${String(g["Confidential"])==="Yes"?' <span class="pill declined">Conf.</span>':''}</td>
+        <td>${esc(g["Route"])}</td>
+        <td style="max-width:260px;">${esc(g["Details"])}</td>
+        <td>${statusPill(g["Status"])}</td>
+        <td>${String(g["Status"])==="Open"?`<button class="btn btn-secondary" onclick="resolveGrievance('${g["Grievance ID"]}','${host}')">Resolve</button>`:"—"}</td>
+      </tr>`).join("")}</table>`}
+    </div>`;
+  });
+}
+function resolveGrievance(id,host){
+  const resolution=prompt("How was this resolved? (recorded against the grievance)");
+  if(resolution===null) return;
+  api("resolveGrievance",{grievanceId:id,status:"Resolved",resolution}).then(res=>{
+    if(res.error){ alert(res.error); return; }
+    loadGrievanceQueue(host);
+  });
+}
+
+/* ---------------- HR/CEO: Probation + Exits ---------------- */
+function loadLifecycle(host){
+  Promise.all([api("probationList"),api("exitList"),api("allEmployees")]).then(([pr,ex,emp])=>{
+    if(pr.error){ $(host).innerHTML=`<div class="msg bad">${esc(pr.error)}</div>`; return; }
+    $(host).innerHTML=`
+      <div class="card"><h3>Probation</h3>
+        <div class="csub">Confirm, extend once, or don't confirm. The decision and its reasons are recorded.</div>
+        <div class="grid3">
+          <div><label class="fl">Employee</label>
+            <select id="pbEmp">${emp.employees.map(e=>`<option value="${esc(e.empId)}">${esc(e.name)}</option>`).join("")}</select></div>
+          <div><label class="fl">Probation start</label><input type="date" id="pbStart" /></div>
+          <div><label class="fl">Due date</label><input type="date" id="pbDue" /></div>
+        </div>
+        <div class="grid2 row-gap">
+          <div><label class="fl">Outcome (leave blank to just set dates)</label>
+            <select id="pbOut"><option value="">— No decision yet —</option>${pr.outcomes.map(o=>`<option>${esc(o)}</option>`).join("")}</select></div>
+          <div><label class="fl">If extending, until</label><input type="date" id="pbExt" /></div>
+        </div>
+        <label class="fl row-gap">Notes / reasons</label><textarea id="pbNotes"></textarea>
+        <div id="pbMsg"></div>
+        <button class="btn btn-primary row-gap" onclick="saveProbation('${host}')">Save</button>
+        ${!(pr.probations||[]).length?"":`
+        <table style="margin-top:16px;"><tr><th>Employee</th><th>Start</th><th>Due</th><th>Outcome</th><th>Decided by</th></tr>
+        ${pr.probations.map(p=>`<tr><td>${esc(p["Name"])}</td><td>${fmtDate(p["Start Date"])}</td>
+          <td>${fmtDate(p["Extended To"]||p["Due Date"])}</td><td>${p["Outcome"]?statusPill(p["Outcome"]):'<span class="pill pending">Pending</span>'}</td>
+          <td>${esc(p["Decided By"]||"—")}</td></tr>`).join("")}</table>`}
+      </div>
+
+      <div class="card"><h3>Exits & Offboarding</h3>
+        <div class="csub">Notice → handover → assets → access → full & final. Outstanding advances must be recovered.</div>
+        <div class="grid3">
+          <div><label class="fl">Employee</label>
+            <select id="exEmp">${emp.employees.map(e=>`<option value="${esc(e.empId)}">${esc(e.name)}</option>`).join("")}</select></div>
+          <div><label class="fl">Type</label><select id="exType"><option>Resignation</option><option>Termination</option><option>End of probation</option></select></div>
+          <div><label class="fl">Last working day</label><input type="date" id="exLwd" /></div>
+        </div>
+        <label class="fl row-gap">Reason</label><input id="exReason" />
+        <div id="exMsg"></div>
+        <div class="row-actions row-gap">
+          <button class="btn btn-primary" onclick="startExit('${host}')">Start exit</button>
+          <button class="btn btn-secondary" onclick="checkDues()">Check outstanding dues</button>
+        </div>
+        <div id="duesBox"></div>
+        ${!(ex.exits||[]).length?"":`
+        <table style="margin-top:16px;"><tr><th>Employee</th><th>Type</th><th>Last day</th><th>Handover</th><th>Assets</th><th>F&F</th><th>Status</th><th></th></tr>
+        ${ex.exits.map(x=>`<tr><td>${esc(x["Name"])}</td><td>${esc(x["Type"])}</td><td>${fmtDate(x["Last Working Day"])}</td>
+          <td>${esc(x["Handover Done"])}</td><td>${esc(x["Assets Returned"])}</td><td>${esc(x["Final Settlement"]||"—")}</td>
+          <td>${statusPill(x["Status"])}</td>
+          <td>${String(x["Status"])!=="Completed"?`<button class="btn btn-secondary" onclick="completeExit('${x["Exit ID"]}','${host}')">Complete</button>`:"—"}</td></tr>`).join("")}</table>`}
+        <div class="msg warn" style="margin-top:12px;">Completing an exit sets the employee to <b>Inactive</b> — that's what actually revokes their portal and training access.</div>
+      </div>`;
+  });
+}
+function saveProbation(host){
+  const b={targetEmpId:$("pbEmp").value,startDate:$("pbStart").value,dueDate:$("pbDue").value,
+    outcome:$("pbOut").value,extendedTo:$("pbExt").value,notes:$("pbNotes").value};
+  $("pbMsg").innerHTML=`<div class="msg"><span class="spinner"></span> Saving…</div>`;
+  api("saveProbation",b).then(res=>{
+    if(res.error){ $("pbMsg").innerHTML=`<div class="msg bad">${esc(res.error)}</div>`; return; }
+    loadLifecycle(host);
+  });
+}
+function startExit(host){
+  const b={targetEmpId:$("exEmp").value,type:$("exType").value,lastWorkingDay:$("exLwd").value,reason:$("exReason").value};
+  $("exMsg").innerHTML=`<div class="msg"><span class="spinner"></span> Starting…</div>`;
+  api("startExit",b).then(res=>{
+    if(res.error){ $("exMsg").innerHTML=`<div class="msg bad">${esc(res.error)}</div>`; return; }
+    loadLifecycle(host);
+  });
+}
+function checkDues(){
+  api("exitDues",{targetEmpId:$("exEmp").value}).then(res=>{
+    if(res.error){ $("duesBox").innerHTML=`<div class="msg bad">${esc(res.error)}</div>`; return; }
+    $("duesBox").innerHTML=`<div class="msg ${res.totalAdvanceValue>0?'warn':'ok'}" style="margin-top:10px;">
+      Outstanding advances: <b>${inr(res.totalAdvanceValue)}</b> across ${res.outstandingAdvances.length} approved request(s).
+      Leave balance — Casual ${res.leaveBalance.Casual}, Sick ${res.leaveBalance.Sick}.
+      ${res.totalAdvanceValue>0?"This must be recovered in the full & final settlement.":""}
+    </div>`;
+  });
+}
+function completeExit(id,host){
+  if(!confirm("Complete this exit? The employee will be set to Inactive and lose portal access. This can't be easily undone.")) return;
+  api("updateExit",{exitId:id,"Status":"Completed","Access Revoked":"Yes"}).then(res=>{
+    if(res.error){ alert(res.error); return; }
+    loadLifecycle(host);
+  });
+}
+
+/* ---------------- CEO/HR: Analytics dashboard ---------------- */
+function loadAnalytics(host,quarter){
+  api("analytics",quarter?{quarter}:{}).then(res=>{
+    if(res.error){ $(host).innerHTML=`<div class="msg bad">${esc(res.error)}</div>`; return; }
+    const s=res.summary;
+    const flagged=res.people.filter(p=>p.flags.length).sort((a,b)=>b.flags.length-a.flags.length);
+    $(host).innerHTML=`
+      <div class="card"><h3>Company Dashboard — ${esc(res.quarter)}</h3>
+        <div class="csub">How the team is actually performing. Flags are things worth your attention.</div>
+        <label class="fl">Quarter</label>
+        <select id="anQ" onchange="loadAnalytics('${host}',this.value)">
+          ${res.quarters.map(q=>`<option ${q===res.quarter?"selected":""}>${esc(q)}</option>`).join("")}
+        </select>
+        <div class="stat-grid" style="margin-top:14px;">
+          <div class="stat"><div class="n">${s.headcount}</div><div class="l">Active headcount</div></div>
+          <div class="stat"><div class="n">${s.avgRating||"—"}</div><div class="l">Avg rating</div></div>
+          <div class="stat"><div class="n">${s.reviewsCompleted}/${s.headcount}</div><div class="l">Reviews done</div></div>
+          <div class="stat"><div class="n">${s.trainingFullyDone}/${s.headcount}</div><div class="l">Fully trained</div></div>
+          <div class="stat"><div class="n" style="color:${s.atRisk?'var(--bad)':'inherit'}">${s.atRisk}</div><div class="l">At risk (rated ≤2)</div></div>
+          <div class="stat"><div class="n" style="color:${s.krasNotSet?'var(--warn)':'inherit'}">${s.krasNotSet}</div><div class="l">KRAs not set</div></div>
+          <div class="stat"><div class="n">${inr(s.totalAdvanceValue)}</div><div class="l">Advances outstanding</div></div>
+          <div class="stat"><div class="n" style="color:${s.totalFlags?'var(--warn)':'var(--ok)'}">${s.totalFlags}</div><div class="l">Total flags</div></div>
+        </div>
+      </div>
+
+      ${flagged.length?`<div class="card"><h3>⚠ Needs Your Attention</h3>
+        <div class="csub">People with open issues, most first.</div>
+        <table><tr><th>Employee</th><th>Flags</th></tr>
+        ${flagged.map(p=>`<tr><td>${esc(p.name)}<br><span style="color:var(--muted)">${esc(p.role||"—")}</span></td>
+          <td>${p.flags.map(f=>`<span class="pill declined" style="margin:2px;">${esc(f)}</span>`).join(" ")}</td></tr>`).join("")}</table>
+      </div>`:`<div class="card"><div class="msg ok">✓ No flags. Everyone's KRAs are set, training is current, and no one is at risk.</div></div>`}
+
+      <div class="card"><h3>Per-Employee Detail</h3>
+        <table><tr><th>Employee</th><th>Rating</th><th>Trend</th><th>Review stage</th><th>Training</th><th>Leave taken</th><th>Advances</th></tr>
+        ${res.people.map(p=>`<tr>
+          <td>${esc(p.name)}<br><span style="color:var(--muted)">${esc(p.role||"—")} · ${esc(p.department||"—")}</span></td>
+          <td>${p.finalRating?ratingPill(p.finalRating):(p.selfRating?`<span class="pill pending">self ${p.selfRating}</span>`:"—")}</td>
+          <td>${p.trend==="Improving"?'<span class="pill approved">↑ Improving</span>':p.trend==="Declining"?'<span class="pill declined">↓ Declining</span>':p.trend==="Steady"?'<span class="pill l2">→ Steady</span>':"—"}</td>
+          <td>${statusPill(p.reviewStage)}</td>
+          <td>${p.trainingDone}/${p.trainingTotal}</td>
+          <td>${p.leaveTaken}d${(p.leaveCasual<0||p.leaveSick<0)?' <span class="pill declined">negative</span>':''}</td>
+          <td>${p.advanceValue?inr(p.advanceValue):"—"}</td>
+        </tr>`).join("")}</table>
+      </div>
+
+      ${res.departments.length?`<div class="card"><h3>By Department</h3>
+        <table><tr><th>Department</th><th>Headcount</th><th>Avg rating</th><th>Avg training</th></tr>
+        ${res.departments.map(d=>`<tr><td>${esc(d.department)}</td><td>${d.headcount}</td>
+          <td>${d.avgRating||"—"}</td><td>${d.avgTraining}%</td></tr>`).join("")}</table>
+      </div>`:""}`;
+  });
+}
+
+/* ============================ APPROVER (Lead / Admin-HR) VIEW ============================ */
 let apprTab="approvals";
 function renderApprover(){
   const isLead = ["Lead","Manager"].indexOf(session.accessLevel)!==-1;
-  const isAdmin = session.accessLevel==="Admin";
+  const isHR   = session.accessLevel==="Admin";   // Admin = HR Lead
   $("app").innerHTML=`<div class="wrap">
     <div class="tabs">
-      ${apprTabBtn("approvals","Approvals")}
-      ${isAdmin?apprTabBtn("trainingdash","Training Dashboard"):""}
+      ${apprTabBtn("approvals","Approvals (L1)")}
+      ${isHR?apprTabBtn("analytics","Dashboard"):""}
+      ${isHR?apprTabBtn("krama","KRAs & KPIs"):""}
+      ${isHR?apprTabBtn("reviewq","Reviews"):""}
+      ${isHR?apprTabBtn("lifecycle","Probation & Exits"):""}
+      ${isHR?apprTabBtn("grievq","Grievances"):""}
+      ${isHR?apprTabBtn("trainingdash","Training Dashboard"):""}
       ${isLead?apprTabBtn("team","My Team"):""}
+      ${apprTabBtn("mykra","My KRAs")}
+      ${apprTabBtn("myreview","My Review")}
       ${apprTabBtn("leave","Leave")}
-      ${apprTabBtn("advance","Salary Advance")}
+      ${apprTabBtn("advance","Advance")}
       ${apprTabBtn("expense","Expenses")}
       ${apprTabBtn("payslips","Payslips")}
       ${apprTabBtn("training","My Trainings")}
+      ${apprTabBtn("concern","Raise a Concern")}
       ${apprTabBtn("profile","My Details")}
     </div>
     <div id="apprBody"><div class="empty"><span class="spinner"></span> Loading…</div></div>
@@ -598,15 +1084,22 @@ function renderApprover(){
 }
 function apprTabBtn(id,label){ return `<button class="tab ${apprTab===id?'on':''}" onclick="apprTab='${id}';renderApprover()">${label}</button>`; }
 function loadApprTab(){
-  // approver self-service tabs render into #apprBody using the shared employee renderers
   if(apprTab==="approvals") loadApprovals(false);
+  else if(apprTab==="analytics") loadAnalytics("apprBody");
+  else if(apprTab==="krama") loadKraManage("apprBody");
+  else if(apprTab==="reviewq") loadReviewQueue("apprBody");
+  else if(apprTab==="lifecycle") loadLifecycle("apprBody");
+  else if(apprTab==="grievq") loadGrievanceQueue("apprBody");
   else if(apprTab==="trainingdash") loadTrainingOverview();
   else if(apprTab==="team") loadMyTeam("apprBody");
+  else if(apprTab==="mykra") loadMyKra("apprBody");
+  else if(apprTab==="myreview") loadMyReviews("apprBody");
   else if(apprTab==="leave") loadLeaveTab("apprBody");
   else if(apprTab==="advance") loadAdvanceTab("apprBody");
   else if(apprTab==="expense") loadExpenseTab("apprBody");
   else if(apprTab==="payslips") loadMyPayslips("apprBody");
   else if(apprTab==="training") loadEmpTraining("apprBody");
+  else if(apprTab==="concern") loadGrievance("apprBody");
   else if(apprTab==="profile") loadProfileTab("apprBody");
 }
 
@@ -719,15 +1212,21 @@ function loadDirectory(isCEO){
 }
 
 /* ============================ CEO VIEW ============================ */
-let ceoTab="approvals";
+let ceoTab="analytics";
 function renderCEO(){
   $("app").innerHTML=`<div class="wrap">
     <div class="tabs">
-      ${ceoTabBtn("approvals","Approvals")}
+      ${ceoTabBtn("analytics","Dashboard")}
+      ${ceoTabBtn("approvals","Approvals (L2)")}
       ${ceoTabBtn("reminders","Reminders")}
+      ${ceoTabBtn("krama","KRAs & KPIs")}
+      ${ceoTabBtn("reviewq","Reviews")}
+      ${ceoTabBtn("lifecycle","Probation & Exits")}
+      ${ceoTabBtn("grievq","Grievances")}
       ${ceoTabBtn("directory","Manage Employees")}
       ${ceoTabBtn("training","Training Dashboard")}
       ${ceoTabBtn("mytraining","My Trainings")}
+      ${ceoTabBtn("mykra","My KRAs")}
       ${ceoTabBtn("salary","Salary & Letters")}
       ${ceoTabBtn("payslips","Payslips")}
       ${ceoTabBtn("attendance","Attendance / Payroll")}
@@ -738,11 +1237,17 @@ function renderCEO(){
 }
 function ceoTabBtn(id,label){ return `<button class="tab ${ceoTab===id?'on':''}" onclick="ceoTab='${id}';renderCEO()">${label}</button>`; }
 function loadCeoTab(){
-  if(ceoTab==="approvals") loadApprovals(true);
+  if(ceoTab==="analytics") loadAnalytics("ceoBody");
+  else if(ceoTab==="approvals") loadApprovals(true);
   else if(ceoTab==="reminders") loadReminders();
+  else if(ceoTab==="krama") loadKraManage("ceoBody");
+  else if(ceoTab==="reviewq") loadReviewQueue("ceoBody");
+  else if(ceoTab==="lifecycle") loadLifecycle("ceoBody");
+  else if(ceoTab==="grievq") loadGrievanceQueue("ceoBody");
   else if(ceoTab==="directory") loadDirectory(true);
   else if(ceoTab==="training") loadTrainingOverview();
   else if(ceoTab==="mytraining") loadEmpTraining("ceoBody");
+  else if(ceoTab==="mykra") loadMyKra("ceoBody");
   else if(ceoTab==="salary") loadSalaryTab();
   else if(ceoTab==="payslips") loadCeoPayslips();
   else if(ceoTab==="attendance") loadAttendanceTab();
